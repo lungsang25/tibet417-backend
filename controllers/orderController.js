@@ -1,7 +1,6 @@
 import orderModel from "../models/orderModel.js";
 import userModel from "../models/userModel.js";
 import Stripe from 'stripe'
-import razorpay from 'razorpay'
 
 // global variables
 const currency = 'inr'
@@ -9,11 +8,6 @@ const deliveryCharge = 10
 
 // gateway initialize
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
-
-const razorpayInstance = new razorpay({
-    key_id : process.env.RAZORPAY_KEY_ID,
-    key_secret : process.env.RAZORPAY_KEY_SECRET,
-})
 
 // Placing orders using COD Method
 const placeOrder = async (req,res) => {
@@ -126,8 +120,8 @@ const verifyStripe = async (req,res) => {
 
 }
 
-// Placing orders using Razorpay Method
-const placeOrderRazorpay = async (req,res) => {
+// Placing orders using Twint Method
+const placeOrderTwint = async (req,res) => {
     try {
         
         const { userId, items, amount, address} = req.body
@@ -137,7 +131,7 @@ const placeOrderRazorpay = async (req,res) => {
             items,
             address,
             amount,
-            paymentMethod:"Razorpay",
+            paymentMethod:"Twint",
             payment:false,
             date: Date.now()
         }
@@ -145,19 +139,18 @@ const placeOrderRazorpay = async (req,res) => {
         const newOrder = new orderModel(orderData)
         await newOrder.save()
 
-        const options = {
-            amount: amount * 100,
-            currency: currency.toUpperCase(),
-            receipt : newOrder._id.toString()
+        // Mock Twint payment creation - In production, this would integrate with a PSP like Adyen or PayEngine
+        const twintPayment = {
+            orderId: newOrder._id.toString(),
+            amount: amount * 100, // Convert to cents
+            currency: 'CHF',
+            qrCode: `https://twint.ch/pay/${newOrder._id}`, // Mock QR code URL
+            shortCode: Math.random().toString(36).substring(2, 8).toUpperCase(), // Mock short code
+            redirectUrl: `${process.env.FRONTEND_URL}/verify-twint?orderId=${newOrder._id}`,
+            status: 'pending'
         }
 
-        await razorpayInstance.orders.create(options, (error,order)=>{
-            if (error) {
-                console.log(error)
-                return res.json({success:false, message: error})
-            }
-            res.json({success:true,order})
-        })
+        res.json({success:true, payment: twintPayment})
 
     } catch (error) {
         console.log(error)
@@ -165,18 +158,20 @@ const placeOrderRazorpay = async (req,res) => {
     }
 }
 
-const verifyRazorpay = async (req,res) => {
+// Verify Twint Payment
+const verifyTwint = async (req,res) => {
     try {
         
-        const { userId, razorpay_order_id  } = req.body
+        const { userId, orderId, paymentStatus } = req.body
 
-        const orderInfo = await razorpayInstance.orders.fetch(razorpay_order_id)
-        if (orderInfo.status === 'paid') {
-            await orderModel.findByIdAndUpdate(orderInfo.receipt,{payment:true});
-            await userModel.findByIdAndUpdate(userId,{cartData:{}})
-            res.json({ success: true, message: "Payment Successful" })
+        // In production, this would verify the payment with the PSP
+        // For now, we'll simulate a successful payment verification
+        if (paymentStatus === 'success') {
+            await orderModel.findByIdAndUpdate(orderId, {payment: true});
+            await userModel.findByIdAndUpdate(userId, {cartData: {}})
+            res.json({ success: true, message: "Twint Payment Successful" })
         } else {
-             res.json({ success: false, message: 'Payment Failed' });
+            res.json({ success: false, message: 'Twint Payment Failed' });
         }
 
     } catch (error) {
@@ -184,7 +179,6 @@ const verifyRazorpay = async (req,res) => {
         res.json({success:false,message:error.message})
     }
 }
-
 
 // All Orders data for Admin Panel
 const allOrders = async (req,res) => {
@@ -231,4 +225,4 @@ const updateStatus = async (req,res) => {
     }
 }
 
-export {verifyRazorpay, verifyStripe ,placeOrder, placeOrderStripe, placeOrderRazorpay, allOrders, userOrders, updateStatus}
+export {verifyStripe, verifyTwint, placeOrder, placeOrderStripe, placeOrderTwint, allOrders, userOrders, updateStatus}
