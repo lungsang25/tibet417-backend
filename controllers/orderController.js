@@ -1,6 +1,7 @@
 import orderModel from "../models/orderModel.js";
 import userModel from "../models/userModel.js";
 import Stripe from 'stripe'
+import PayrexxAPI from "../utils/payrexx.js"
 
 // global variables
 const currency = 'inr'
@@ -8,6 +9,13 @@ const deliveryCharge = 10
 
 // gateway initialize
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
+
+// Initialize Payrexx
+const payrexx = new PayrexxAPI(
+    process.env.PAYREXX_INSTANCE,
+    process.env.PAYREXX_API_SECRET,
+    process.env.PAYREXX_ENVIRONMENT || 'sandbox'
+);
 
 // Placing orders using COD Method
 const placeOrder = async (req,res) => {
@@ -120,63 +128,129 @@ const verifyStripe = async (req,res) => {
 
 }
 
-// Placing orders using Twint Method
-const placeOrderTwint = async (req,res) => {
+// Placing orders using Twint via Payrexx
+const placeOrderTwint = async (req, res) => {
     try {
+        const { userId, items, amount, address } = req.body
         
-        const { userId, items, amount, address} = req.body
-
         const orderData = {
             userId,
             items,
             address,
             amount,
-            paymentMethod:"Twint",
-            payment:false,
+            paymentMethod: "Twint",
+            payment: false,
             date: Date.now()
         }
 
         const newOrder = new orderModel(orderData)
         await newOrder.save()
 
-        // Mock Twint payment creation - In production, this would integrate with a PSP like Adyen or PayEngine
-        const twintPayment = {
-            orderId: newOrder._id.toString(),
-            amount: amount * 100, // Convert to cents
+        // Create Payrexx Gateway for Twint payment with minimal required fields
+        const gatewayData = {
+            amount: Math.round(amount * 100), // Convert to cents
             currency: 'CHF',
-            qrCode: `https://twint.ch/pay/${newOrder._id}`, // Mock QR code URL
-            shortCode: Math.random().toString(36).substring(2, 8).toUpperCase(), // Mock short code
-            redirectUrl: `${process.env.FRONTEND_URL}/verify-twint?orderId=${newOrder._id}`,
-            status: 'pending'
+            successRedirectUrl: `${process.env.FRONTEND_URL}/verify-twint?success=true&orderId=${newOrder._id}`,
+            failedRedirectUrl: `${process.env.FRONTEND_URL}/verify-twint?success=false&orderId=${newOrder._id}`,
+            cancelRedirectUrl: `${process.env.FRONTEND_URL}/cart`,
+            sku: `ORDER-${newOrder._id}`,
+            referenceId: newOrder._id.toString(),
+            purpose: `Order Payment ${newOrder._id}`,
+            preAuthorization: false,
+            reservation: 0,
+            vatRate: 0
         }
 
-        res.json({success:true, payment: twintPayment})
+        console.log('Creating Payrexx gateway with data:', gatewayData);
+
+        const gateway = await payrexx.createGateway(gatewayData)
+
+        if (gateway.status === 'success' && gateway.data && gateway.data.length > 0) {
+            const gatewayInfo = gateway.data[0]
+            
+            // Update order with Payrexx gateway ID
+            await orderModel.findByIdAndUpdate(newOrder._id, {
+                payrexxGatewayId: gatewayInfo.id
+            })
+
+            res.json({
+                success: true,
+                payment: {
+                    orderId: newOrder._id.toString(),
+                    gatewayId: gatewayInfo.id,
+                    paymentUrl: gatewayInfo.link,
+                    qrCodeUrl: gatewayInfo.qrCode || null,
+                    amount: amount,
+                    currency: 'CHF'
+                }
+            })
+        } else {
+            // If gateway creation failed, delete the order
+            await orderModel.findByIdAndDelete(newOrder._id)
+            res.json({ success: false, message: "Failed to create payment gateway" })
+        }
 
     } catch (error) {
         console.log(error)
-        res.json({success:false,message:error.message})
+        res.json({ success: false, message: error.message })
     }
 }
 
-// Verify Twint Payment
-const verifyTwint = async (req,res) => {
+// Verify Twint payment via Payrexx
+const verifyTwint = async (req, res) => {
     try {
-        
-        const { userId, orderId, paymentStatus } = req.body
+        const { orderId, success } = req.body
 
-        // In production, this would verify the payment with the PSP
-        // For now, we'll simulate a successful payment verification
-        if (paymentStatus === 'success') {
-            await orderModel.findByIdAndUpdate(orderId, {payment: true});
-            await userModel.findByIdAndUpdate(userId, {cartData: {}})
-            res.json({ success: true, message: "Twint Payment Successful" })
+        if (!orderId) {
+            return res.json({ success: false, message: "Order ID is required" })
+        }
+
+        const order = await orderModel.findById(orderId)
+        if (!order) {
+            return res.json({ success: false, message: "Order not found" })
+        }
+
+        if (success === 'true' || success === true) {
+            // Get gateway status from Payrexx to verify payment
+            if (order.payrexxGatewayId) {
+                try {
+                    const gatewayStatus = await payrexx.getGateway(order.payrexxGatewayId)
+                    
+                    if (gatewayStatus.status === 'success' && gatewayStatus.data && gatewayStatus.data.length > 0) {
+                        const gateway = gatewayStatus.data[0]
+                        
+                        // Check if payment was actually completed
+                        if (gateway.status === 'confirmed' || gateway.status === 'authorized') {
+                            await orderModel.findByIdAndUpdate(orderId, { 
+                                payment: true,
+                                payrexxTransactionId: gateway.invoice?.paymentRequestId || null
+                            })
+                            
+                            // Clear user's cart
+                            await userModel.findByIdAndUpdate(order.userId, { cartData: {} })
+                            
+                            res.json({ success: true, message: "Payment verified successfully" })
+                        } else {
+                            res.json({ success: false, message: "Payment not completed" })
+                        }
+                    } else {
+                        res.json({ success: false, message: "Unable to verify payment status" })
+                    }
+                } catch (verifyError) {
+                    console.log('Payrexx verification error:', verifyError)
+                    res.json({ success: false, message: "Payment verification failed" })
+                }
+            } else {
+                res.json({ success: false, message: "No payment gateway ID found" })
+            }
         } else {
-            res.json({ success: false, message: 'Twint Payment Failed' });
+            // Payment failed or cancelled
+            res.json({ success: false, message: "Payment was cancelled or failed" })
         }
 
     } catch (error) {
         console.log(error)
-        res.json({success:false,message:error.message})
+        res.json({ success: false, message: error.message })
     }
 }
 

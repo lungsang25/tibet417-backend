@@ -21,4 +21,34 @@ orderRouter.post('/userorders',authUser,userOrders)
 orderRouter.post('/verifyStripe',authUser, verifyStripe)
 orderRouter.post('/verifyTwint',authUser, verifyTwint)
 
+// Webhook endpoint for Payrexx (no auth required for webhooks)
+orderRouter.post('/webhook/payrexx', async (req, res) => {
+    try {
+        // Payrexx webhook handler
+        const { transaction } = req.body;
+        
+        if (transaction && transaction.status === 'confirmed') {
+            const orderId = transaction.referenceId;
+            
+            if (orderId) {
+                await orderModel.findByIdAndUpdate(orderId, { 
+                    payment: true,
+                    payrexxTransactionId: transaction.id
+                });
+                
+                // Clear user's cart
+                const order = await orderModel.findById(orderId);
+                if (order) {
+                    await userModel.findByIdAndUpdate(order.userId, { cartData: {} });
+                }
+            }
+        }
+        
+        res.status(200).send('OK');
+    } catch (error) {
+        console.log('Webhook error:', error);
+        res.status(500).send('Error');
+    }
+});
+
 export default orderRouter
