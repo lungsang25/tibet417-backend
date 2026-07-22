@@ -115,23 +115,27 @@ const googleLogin = async (req, res) => {
         });
 
         const payload = ticket.getPayload();
-        const { sub: googleId, email, name } = payload;
+        const { sub: googleId, email, name, picture } = payload;
 
         // Check if user exists
         let user = await userModel.findOne({ email });
 
         if (user) {
-            // If user exists but doesn't have googleId, link it
+            // If user exists, update googleId and picture if not set
             if (!user.googleId) {
                 user.googleId = googleId;
-                await user.save();
             }
+            if (!user.picture && picture) {
+                user.picture = picture;
+            }
+            await user.save();
         } else {
             // Create new user
             user = new userModel({
                 name,
                 email,
-                googleId
+                googleId,
+                picture
             });
             await user.save();
         }
@@ -145,4 +149,31 @@ const googleLogin = async (req, res) => {
     }
 }
 
-export { loginUser, registerUser, adminLogin, googleLogin }
+// Route to get user profile
+const getProfile = async (req, res) => {
+    try {
+        const { userId } = req.body;
+        
+        const user = await userModel.findById(userId).select('-password -cartData');
+        
+        if (!user) {
+            return res.json({ success: false, message: "User not found" });
+        }
+        
+        res.json({ 
+            success: true, 
+            user: {
+                name: user.name,
+                email: user.email,
+                picture: user.picture || null,
+                googleId: user.googleId ? true : false
+            }
+        });
+        
+    } catch (error) {
+        console.log(error);
+        res.json({ success: false, message: error.message });
+    }
+}
+
+export { loginUser, registerUser, adminLogin, googleLogin, getProfile }
