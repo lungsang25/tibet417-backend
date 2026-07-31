@@ -16,7 +16,12 @@ const addProduct = async (req, res) => {
 
         let imagesUrl = await Promise.all(
             images.map(async (item) => {
-                let result = await cloudinary.uploader.upload(item.path, { resource_type: 'image' });
+                let result = await cloudinary.uploader.upload(item.path, { 
+                    resource_type: 'image',
+                    transformation: [
+                        { width: 800, height: 800, crop: 'limit', quality: 'auto', fetch_format: 'auto' }
+                    ]
+                });
                 return result.secure_url
             })
         )
