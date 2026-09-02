@@ -7,6 +7,7 @@ const userSchema = new mongoose.Schema({
     googleId: { type: String, required: false },
     picture: { type: String, required: false },
     cartData: { type: Object, default: {} },
+    wishlist: { type: Array, default: [] },
     bodyMeasurements: {
         height: { type: Number, required: false },
         weight: { type: Number, required: false },
