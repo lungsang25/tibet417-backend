@@ -9,6 +9,7 @@ import cartRouter from './routes/cartRoute.js'
 import orderRouter from './routes/orderRoute.js'
 import analyticsRouter from './routes/analyticsRoute.js'
 import wishlistRouter from './routes/wishlistRoute.js'
+import bonusRouter from './routes/bonusRoute.js'
 
 // App Config
 const app = express()
@@ -27,6 +28,7 @@ app.use('/api/cart',cartRouter)
 app.use('/api/order',orderRouter)
 app.use('/api/analytics',analyticsRouter)
 app.use('/api/wishlist',wishlistRouter)
+app.use('/api/bonus',bonusRouter)
 
 app.get('/',(req,res)=>{
     res.send("API Working")

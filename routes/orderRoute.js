@@ -12,6 +12,8 @@ import {
     clearTracking,
     verifyStripe,
     verifyTwint,
+    cancelOrder,
+    refundOrder,
 } from '../controllers/orderController.js'
 import adminAuth  from '../middleware/adminAuth.js'
 import authUser from '../middleware/auth.js'
@@ -33,6 +35,8 @@ orderRouter.post('/list',adminAuth,allOrders)
 orderRouter.post('/status',adminAuth,updateStatus)
 orderRouter.post('/tracking',adminAuth,updateTracking)
 orderRouter.post('/tracking/clear',adminAuth,clearTracking)
+orderRouter.post('/cancel',adminAuth,cancelOrder)
+orderRouter.post('/refund',adminAuth,refundOrder)
 
 // Payment Features
 orderRouter.post('/place',authUser,placeOrder)

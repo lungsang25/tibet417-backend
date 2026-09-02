@@ -88,6 +88,41 @@ const orderSchema = new mongoose.Schema({
      */
     payrexxGatewayId: { type: String, default: null },
     payrexxTransactionId: { type: String, default: null },
+
+    // ── Redeemable Bonus Program ────────────────────────────────────────────
+    /**
+     * Points applied as a discount on this order. `amount` above is already
+     * net of `discountAmount` — this block exists purely so the order/receipt
+     * can show what happened, not to recompute anything. `transactionId`
+     * points at the (confirmed, negative) redemption row in pointsTransaction.
+     */
+    redemption: {
+        pointsRedeemed: { type: Number, default: 0 },
+        discountAmount: { type: Number, default: 0 },
+        transactionId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    },
+
+    /**
+     * Purchase points this order earned, as a DISPLAY SNAPSHOT only — the
+     * pointsTransaction ledger is the source of truth for whether/when they
+     * were actually credited. Mirrors the tracking.carrierName snapshot
+     * pattern above: the order can show "you earned 45 points" without any
+     * downstream reader needing to know the earn-rate that was active when it
+     * was placed.
+     */
+    pointsEarned: { type: Number, default: 0 },
+
+    /**
+     * Deliberately ORTHOGONAL to `status`, exactly like `payment: Boolean`
+     * already is — folding a cancelled/refunded state into the linear
+     * ORDER_STATUSES array would break statusIndex()'s forward-only semantics
+     * that buildStatusTransition/maybeNotify depend on.
+     */
+    cancellation: {
+        status: { type: String, enum: ['none', 'cancelled', 'refunded'], default: 'none' },
+        at: { type: Number, default: null },
+        reason: { type: String, default: '', maxlength: 300 },
+    },
 })
 
 const orderModel = mongoose.models.order || mongoose.model('order', orderSchema)

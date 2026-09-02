@@ -3,6 +3,7 @@ import bcrypt from "bcrypt"
 import jwt from 'jsonwebtoken'
 import { OAuth2Client } from 'google-auth-library'
 import userModel from "../models/userModel.js";
+import * as bonusService from "../services/bonusService.js"
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -45,7 +46,7 @@ const loginUser = async (req, res) => {
 const registerUser = async (req, res) => {
     try {
 
-        const { name, email, password } = req.body;
+        const { name, email, password, referralCode } = req.body;
 
         // checking user already exists or not
         const exists = await userModel.findOne({ email });
@@ -65,13 +66,24 @@ const registerUser = async (req, res) => {
         const salt = await bcrypt.genSalt(10)
         const hashedPassword = await bcrypt.hash(password, salt)
 
+        // Resolved BEFORE the first save so referredBy lands in one write —
+        // resolveReferrer never throws and returns null for an unknown/stale
+        // code, so a bad ?ref= link can never block registration.
+        const referrer = await bonusService.resolveReferrer(referralCode)
+
         const newUser = new userModel({
             name,
             email,
-            password: hashedPassword
+            password: hashedPassword,
+            referredBy: referrer ? String(referrer._id) : null,
         })
 
         const user = await newUser.save()
+
+        // Fire-and-forget from the response's point of view, but awaited: on
+        // Vercel the instance can freeze the moment the response flushes.
+        // Never throws, so a bonus-ledger issue cannot fail registration.
+        await bonusService.grantWelcomeBonus(user._id)
 
         const token = createToken(user._id)
 
@@ -106,7 +118,7 @@ const adminLogin = async (req, res) => {
 // Route for Google login
 const googleLogin = async (req, res) => {
     try {
-        const { credential } = req.body;
+        const { credential, referralCode } = req.body;
 
         // Verify the Google token
         const ticket = await googleClient.verifyIdToken({
@@ -130,14 +142,20 @@ const googleLogin = async (req, res) => {
             }
             await user.save();
         } else {
-            // Create new user
+            // New account via Google — the same referral/welcome-bonus hooks
+            // as registerUser, since this path bypasses it entirely.
+            const referrer = await bonusService.resolveReferrer(referralCode)
+
             user = new userModel({
                 name,
                 email,
                 googleId,
-                picture
+                picture,
+                referredBy: referrer ? String(referrer._id) : null,
             });
             await user.save();
+
+            await bonusService.grantWelcomeBonus(user._id)
         }
 
         const token = createToken(user._id);

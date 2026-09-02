@@ -3,6 +3,7 @@ import orderModel from "../models/orderModel.js";
 import userModel from "../models/userModel.js";
 import Stripe from 'stripe'
 import PayrexxAPI from "../utils/payrexx.js"
+import * as bonusService from "../services/bonusService.js"
 import {
     ORDER_STATUSES,
     CARRIERS,
@@ -33,35 +34,101 @@ const payrexx = new PayrexxAPI(
     process.env.PAYREXX_ENVIRONMENT || 'sandbox'
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Redeemable Bonus Program: shared order-creation helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Builds and saves a new order with redemption, purchase points, and referral
+ * bonus all threaded through it — the ONE place this logic lives instead of
+ * being tripled across placeOrder/placeOrderStripe/placeOrderTwint.
+ *
+ * Runs inside a Mongo transaction: the redemption balance-check, the order
+ * write, and every bonus ledger row it produces are one atomic unit. That is
+ * what prevents a double-spend (see computeRedemption) and guarantees a bonus
+ * row can never exist for an order that failed to save, or vice versa.
+ *
+ * `amount` in, `finalAmount` (net of any redemption discount) out — callers
+ * must use the RETURNED order's `amount`/`redemption`, not the raw request
+ * body, for anything downstream (Stripe line items, Payrexx gateway amount,
+ * the JSON response).
+ */
+const buildAndSaveOrder = async ({ userId, items, address, amount, paymentMethod, locale, redeemPoints }) => {
+    const settings = await bonusService.getSettings()
+    // One timestamp for both `date` and the seeded history entry, so the
+    // order list and the timeline can never disagree by a millisecond.
+    const now = Date.now()
+
+    const mongoSession = await mongoose.startSession()
+    try {
+        let result
+        await mongoSession.withTransaction(async () => {
+            const redemption = await bonusService.computeRedemption({
+                userId, requestedPoints: redeemPoints, orderAmount: amount, settings, session: mongoSession,
+            })
+            const finalAmount = Math.round((amount - redemption.discountAmount) * 100) / 100
+            const pointsEarned = bonusService.previewPurchasePoints({
+                orderAmount: finalAmount, deliveryFee: deliveryCharge, settings,
+            })
+
+            const [order] = await orderModel.create([{
+                userId,
+                items,
+                address,
+                amount: finalAmount,
+                paymentMethod,
+                payment: false,
+                date: now,
+                locale: normalizeLocale(locale),
+                statusHistory: [{ status: DEFAULT_ORDER_STATUS, at: now, note: '' }],
+                redemption: { pointsRedeemed: redemption.pointsToRedeem, discountAmount: redemption.discountAmount },
+                pointsEarned,
+            }], { session: mongoSession })
+
+            if (redemption.pointsToRedeem > 0) {
+                const tx = await bonusService.recordRedemption({
+                    userId, orderId: order._id, points: redemption.pointsToRedeem, session: mongoSession,
+                })
+                order.redemption.transactionId = tx._id
+                await order.save({ session: mongoSession })
+            }
+
+            await bonusService.awardPurchasePoints({
+                userId, orderId: order._id, points: pointsEarned, settings, session: mongoSession,
+            })
+            await bonusService.awardReferralBonusIfEligible({
+                refereeUserId: userId, orderId: order._id, orderAmount: finalAmount, settings, session: mongoSession,
+            })
+
+            result = { order, discountAmount: redemption.discountAmount, pointsEarned }
+        })
+        return result
+    } finally {
+        mongoSession.endSession()
+    }
+}
+
 // Placing orders using COD Method
 const placeOrder = async (req,res) => {
-    
+
     try {
-        
-        const { userId, items, amount, address, locale} = req.body;
 
-        // One timestamp for both `date` and the seeded history entry, so the
-        // order list and the timeline can never disagree by a millisecond.
-        const now = Date.now()
+        const { userId, items, amount, address, locale, redeemPoints } = req.body;
 
-        const orderData = {
-            userId,
-            items,
-            address,
-            amount,
-            paymentMethod:"COD",
-            payment:false,
-            date: now,
-            locale: normalizeLocale(locale),
-            statusHistory: [{ status: DEFAULT_ORDER_STATUS, at: now, note: '' }],
-        }
-
-        const newOrder = new orderModel(orderData)
-        await newOrder.save()
+        const { order } = await buildAndSaveOrder({
+            userId, items, address, amount, paymentMethod: 'COD', locale, redeemPoints,
+        })
 
         await userModel.findByIdAndUpdate(userId,{cartData:{}})
 
-        res.json({success:true,message:"Order Placed"})
+        res.json({
+            success: true,
+            message: "Order Placed",
+            orderId: order._id,
+            amount: order.amount,
+            discountAmount: order.redemption.discountAmount,
+            pointsEarned: order.pointsEarned,
+        })
 
 
     } catch (error) {
@@ -74,59 +141,69 @@ const placeOrder = async (req,res) => {
 // Placing orders using Stripe Method
 const placeOrderStripe = async (req,res) => {
     try {
-        
-        const { userId, items, amount, address, locale} = req.body
+
+        const { userId, items, amount, address, locale, redeemPoints } = req.body
         const { origin } = req.headers;
 
-        // One timestamp for both `date` and the seeded history entry, so the
-        // order list and the timeline can never disagree by a millisecond.
-        const now = Date.now()
+        const { order, discountAmount } = await buildAndSaveOrder({
+            userId, items, address, amount, paymentMethod: 'Stripe', locale, redeemPoints,
+        })
 
-        const orderData = {
-            userId,
-            items,
-            address,
-            amount,
-            paymentMethod:"Stripe",
-            payment:false,
-            date: now,
-            locale: normalizeLocale(locale),
-            statusHistory: [{ status: DEFAULT_ORDER_STATUS, at: now, note: '' }],
+        try {
+            const line_items = items.map((item) => ({
+                price_data: {
+                    currency:currency,
+                    product_data: {
+                        name:item.name
+                    },
+                    unit_amount: item.price * 100
+                },
+                quantity: item.quantity
+            }))
+
+            line_items.push({
+                price_data: {
+                    currency:currency,
+                    product_data: {
+                        name:'Delivery Charges'
+                    },
+                    unit_amount: deliveryCharge * 100
+                },
+                quantity: 1
+            })
+
+            // Stripe Checkout rejects a negative unit_amount, so a points
+            // discount is applied as a one-time Coupon rather than a negative
+            // line item — the itemised receipt still shows real item prices.
+            let discounts
+            if (discountAmount > 0) {
+                const coupon = await stripe.coupons.create({
+                    amount_off: Math.round(discountAmount * 100),
+                    currency,
+                    duration: 'once',
+                    name: 'Bonus points redeemed',
+                })
+                discounts = [{ coupon: coupon.id }]
+            }
+
+            const checkoutSession = await stripe.checkout.sessions.create({
+                success_url: `${origin}/verify?success=true&orderId=${order._id}`,
+                cancel_url:  `${origin}/verify?success=false&orderId=${order._id}`,
+                line_items,
+                mode: 'payment',
+                ...(discounts ? { discounts } : {}),
+            })
+
+            res.json({success:true,session_url:checkoutSession.url});
+        } catch (checkoutError) {
+            // The order (and any redemption debit already applied to it) was
+            // already committed above — a Checkout Session failure here must
+            // not leave the customer's redeemed points gone with nothing to
+            // show for them.
+            console.log('[order] Stripe checkout session creation failed:', checkoutError)
+            await bonusService.reverseOrder(order._id, 'stripe_checkout_creation_failed')
+            res.json({success:false,message:checkoutError.message})
         }
-
-        const newOrder = new orderModel(orderData)
-        await newOrder.save()
-
-        const line_items = items.map((item) => ({
-            price_data: {
-                currency:currency,
-                product_data: {
-                    name:item.name
-                },
-                unit_amount: item.price * 100
-            },
-            quantity: item.quantity
-        }))
-
-        line_items.push({
-            price_data: {
-                currency:currency,
-                product_data: {
-                    name:'Delivery Charges'
-                },
-                unit_amount: deliveryCharge * 100
-            },
-            quantity: 1
-        })
-
-        const session = await stripe.checkout.sessions.create({
-            success_url: `${origin}/verify?success=true&orderId=${newOrder._id}`,
-            cancel_url:  `${origin}/verify?success=false&orderId=${newOrder._id}`,
-            line_items,
-            mode: 'payment',
-        })
-
-        res.json({success:true,session_url:session.url});
 
     } catch (error) {
         console.log(error)
@@ -134,7 +211,7 @@ const placeOrderStripe = async (req,res) => {
     }
 }
 
-// Verify Stripe 
+// Verify Stripe
 const verifyStripe = async (req,res) => {
 
     const { orderId, success, userId } = req.body
@@ -145,10 +222,14 @@ const verifyStripe = async (req,res) => {
             await userModel.findByIdAndUpdate(userId, {cartData: {}})
             res.json({success: true});
         } else {
+            // A cancelled/expired Checkout Session — void any pending purchase
+            // points and claw back any already-confirmed redemption debit
+            // before the order itself is removed.
+            await bonusService.reverseOrder(orderId, 'stripe_payment_failed')
             await orderModel.findByIdAndDelete(orderId)
             res.json({success:false})
         }
-        
+
     } catch (error) {
         console.log(error)
         res.json({success:false,message:error.message})
@@ -159,30 +240,15 @@ const verifyStripe = async (req,res) => {
 // Placing orders using Twint via Payrexx
 const placeOrderTwint = async (req, res) => {
     try {
-        const { userId, items, amount, address, locale } = req.body
-        
-        // One timestamp for both `date` and the seeded history entry, so the
-        // order list and the timeline can never disagree by a millisecond.
-        const now = Date.now()
+        const { userId, items, amount, address, locale, redeemPoints } = req.body
 
-        const orderData = {
-            userId,
-            items,
-            address,
-            amount,
-            paymentMethod: "Twint",
-            payment: false,
-            date: now,
-            locale: normalizeLocale(locale),
-            statusHistory: [{ status: DEFAULT_ORDER_STATUS, at: now, note: '' }],
-        }
-
-        const newOrder = new orderModel(orderData)
-        await newOrder.save()
+        const { order: newOrder } = await buildAndSaveOrder({
+            userId, items, address, amount, paymentMethod: 'Twint', locale, redeemPoints,
+        })
 
         // Create Payrexx Gateway for Twint payment with minimal required fields
         const gatewayData = {
-            amount: Math.round(amount * 100), // Convert to cents
+            amount: Math.round(newOrder.amount * 100), // net of any points discount, in cents
             currency: 'CHF',
             successRedirectUrl: `${process.env.FRONTEND_URL}/verify-twint?success=true&orderId=${newOrder._id}`,
             failedRedirectUrl: `${process.env.FRONTEND_URL}/verify-twint?success=false&orderId=${newOrder._id}`,
@@ -195,13 +261,23 @@ const placeOrderTwint = async (req, res) => {
             vatRate: 0
         }
 
-        console.log('Creating Payrexx gateway with data:', gatewayData);
-
-        const gateway = await payrexx.createGateway(gatewayData)
+        // The order above (and any redemption debit on it) is already
+        // committed, so a thrown error here — not just an explicit failure
+        // status — must still trigger the same reversal + cleanup as below.
+        let gateway
+        try {
+            console.log('Creating Payrexx gateway with data:', gatewayData);
+            gateway = await payrexx.createGateway(gatewayData)
+        } catch (gatewayError) {
+            console.log('Payrexx gateway creation threw:', gatewayError)
+            await bonusService.reverseOrder(newOrder._id, 'twint_gateway_creation_failed')
+            await orderModel.findByIdAndDelete(newOrder._id)
+            return res.json({ success: false, message: "Failed to create payment gateway" })
+        }
 
         if (gateway.status === 'success' && gateway.data && gateway.data.length > 0) {
             const gatewayInfo = gateway.data[0]
-            
+
             // Update order with Payrexx gateway ID
             await orderModel.findByIdAndUpdate(newOrder._id, {
                 payrexxGatewayId: gatewayInfo.id
@@ -214,12 +290,14 @@ const placeOrderTwint = async (req, res) => {
                     gatewayId: gatewayInfo.id,
                     paymentUrl: gatewayInfo.link,
                     qrCodeUrl: gatewayInfo.qrCode || null,
-                    amount: amount,
+                    amount: newOrder.amount,
                     currency: 'CHF'
                 }
             })
         } else {
-            // If gateway creation failed, delete the order
+            // If gateway creation failed, void/claw back any bonus effects
+            // before deleting the order.
+            await bonusService.reverseOrder(newOrder._id, 'twint_gateway_creation_failed')
             await orderModel.findByIdAndDelete(newOrder._id)
             res.json({ success: false, message: "Failed to create payment gateway" })
         }
@@ -278,7 +356,9 @@ const verifyTwint = async (req, res) => {
                 res.json({ success: false, message: "No payment gateway ID found" })
             }
         } else {
-            // Payment failed or cancelled
+            // Payment failed or cancelled — a terminal failure signal from the
+            // redirect flow, so void/claw back any bonus effects on the order.
+            await bonusService.reverseOrder(orderId, 'twint_payment_failed')
             res.json({ success: false, message: "Payment was cancelled or failed" })
         }
 
@@ -502,6 +582,16 @@ const updateStatus = async (req,res) => {
             orderId, { $set: set }, { new: true, runValidators: true },
         )
 
+        // Bonus vesting: purchase points and any referral bonus this order
+        // triggered move from pending to confirmed (spendable) on the genuine
+        // first arrival at Delivered. No extra idempotency guard is needed
+        // here — `changed` above is already false for a repeated same-status
+        // call, the exact mechanism that already protects the shipped/
+        // delivered emails from double-send. Never throws.
+        if (status === DELIVERED_STATUS) {
+            await bonusService.confirmOrderBonuses(orderId)
+        }
+
         // Awaited, not fire-and-forget: on Vercel the instance can be frozen
         // the moment the response flushes, so a detached promise would send
         // reliably in dev and silently never send in production.
@@ -566,15 +656,25 @@ const updateTracking = async (req, res) => {
         }
 
         let notify = null
+        let deliveredJustNow = false
         if (status !== undefined) {
             const transition = buildStatusTransition(order, status, now)
             Object.assign(set, transition.set)
             notify = transition.notify
+            deliveredJustNow = transition.changed && status === DELIVERED_STATUS
         }
 
         const updated = await orderModel.findByIdAndUpdate(
             orderId, { $set: set }, { new: true, runValidators: true },
         )
+
+        // Same bonus-vesting hook as updateStatus — this endpoint can ALSO
+        // carry the order across the Delivered line (the tracking editor's
+        // optional status field), so it needs the identical hook or points
+        // would never confirm for any order delivered from here.
+        if (deliveredJustNow) {
+            await bonusService.confirmOrderBonuses(orderId)
+        }
 
         const mail = await maybeNotify(updated, notify)
 
@@ -621,6 +721,84 @@ const clearTracking = async (req, res) => {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Cancellation / refund — orthogonal to `status`, per orderModel.cancellation.
+// The mechanism the Redeemable Bonus Program's "void pending / claw back
+// confirmed" requirement hooks into: none of this existed before this
+// feature — there was no cancel or refund action anywhere in this file.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Pre-fulfilment cancellation. Any purchase/referral points this order
+ * generated are still `pending` (it hasn't reached Delivered), so
+ * reverseOrder simply voids them — no balance change. Any redemption debit
+ * IS already confirmed the moment the order was placed, so cancelling
+ * correctly claws that back, returning the spent points to the customer.
+ */
+const cancelOrder = async (req, res) => {
+    try {
+        const { orderId, reason } = req.body
+
+        if (!mongoose.isValidObjectId(orderId)) {
+            return res.json({ success: false, message: 'Invalid order id' })
+        }
+
+        const order = await orderModel.findById(orderId)
+        if (!order) return res.json({ success: false, message: 'Order not found' })
+        if (order.cancellation?.status !== 'none') {
+            return res.json({ success: false, message: `Order already ${order.cancellation.status}` })
+        }
+        if (order.status === DELIVERED_STATUS) {
+            return res.json({ success: false, message: 'Delivered orders must be refunded, not cancelled' })
+        }
+
+        const reversal = await bonusService.reverseOrder(orderId, reason || 'Order cancelled')
+
+        const updated = await orderModel.findByIdAndUpdate(orderId, {
+            $set: { 'cancellation.status': 'cancelled', 'cancellation.at': Date.now(), 'cancellation.reason': reason || '' },
+        }, { new: true })
+
+        res.json({ success: true, message: 'Order cancelled', order: updated, reversal })
+    } catch (error) {
+        console.log(error)
+        res.json({ success: false, message: error.message })
+    }
+}
+
+/**
+ * Post-fulfilment refund. By the time an order reaches Delivered its purchase
+ * points (and any referral bonus it triggered) are already `confirmed` —
+ * reverseOrder claws those back with negative rows, which can take a
+ * customer's balance negative on purpose: it correctly represents "you owe
+ * these back" and blocks further redemption until earned back down.
+ */
+const refundOrder = async (req, res) => {
+    try {
+        const { orderId, reason } = req.body
+
+        if (!mongoose.isValidObjectId(orderId)) {
+            return res.json({ success: false, message: 'Invalid order id' })
+        }
+
+        const order = await orderModel.findById(orderId)
+        if (!order) return res.json({ success: false, message: 'Order not found' })
+        if (order.cancellation?.status === 'refunded') {
+            return res.json({ success: false, message: 'Order already refunded' })
+        }
+
+        const reversal = await bonusService.reverseOrder(orderId, reason || 'Order refunded')
+
+        const updated = await orderModel.findByIdAndUpdate(orderId, {
+            $set: { 'cancellation.status': 'refunded', 'cancellation.at': Date.now(), 'cancellation.reason': reason || '' },
+        }, { new: true })
+
+        res.json({ success: true, message: 'Order refunded', order: updated, reversal })
+    } catch (error) {
+        console.log(error)
+        res.json({ success: false, message: error.message })
+    }
+}
+
 export {
     verifyStripe,
     verifyTwint,
@@ -634,4 +812,6 @@ export {
     updateStatus,
     updateTracking,
     clearTracking,
+    cancelOrder,
+    refundOrder,
 }
