@@ -176,4 +176,70 @@ const getProfile = async (req, res) => {
     }
 }
 
-export { loginUser, registerUser, adminLogin, googleLogin, getProfile }
+// Route to get user body measurements
+const getMeasurements = async (req, res) => {
+    try {
+        const { userId } = req.body;
+        
+        const user = await userModel.findById(userId).select('bodyMeasurements');
+        
+        if (!user) {
+            return res.json({ success: false, message: "User not found" });
+        }
+        
+        res.json({ 
+            success: true, 
+            measurements: user.bodyMeasurements || null
+        });
+        
+    } catch (error) {
+        console.log(error);
+        res.json({ success: false, message: error.message });
+    }
+}
+
+// Route to update user body measurements
+const updateMeasurements = async (req, res) => {
+    try {
+        const { userId, measurements } = req.body;
+        
+        // Validate measurements
+        const validFields = ['height', 'weight', 'chest', 'waist', 'hips', 'inseam'];
+        const measurementData = {};
+        
+        for (const field of validFields) {
+            if (measurements[field] !== undefined && measurements[field] !== null && measurements[field] !== '') {
+                const value = parseFloat(measurements[field]);
+                if (isNaN(value) || value <= 0) {
+                    return res.json({ success: false, message: `Invalid value for ${field}` });
+                }
+                measurementData[field] = value;
+            }
+        }
+        
+        measurementData.unit = 'metric';
+        measurementData.updatedAt = new Date();
+        
+        const user = await userModel.findByIdAndUpdate(
+            userId,
+            { bodyMeasurements: measurementData },
+            { new: true }
+        ).select('bodyMeasurements');
+        
+        if (!user) {
+            return res.json({ success: false, message: "User not found" });
+        }
+        
+        res.json({ 
+            success: true, 
+            message: "Measurements updated successfully",
+            measurements: user.bodyMeasurements
+        });
+        
+    } catch (error) {
+        console.log(error);
+        res.json({ success: false, message: error.message });
+    }
+}
+
+export { loginUser, registerUser, adminLogin, googleLogin, getProfile, getMeasurements, updateMeasurements }
