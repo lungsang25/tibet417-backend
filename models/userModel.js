@@ -6,8 +6,18 @@ const userSchema = new mongoose.Schema({
     password: { type: String, required: false },
     googleId: { type: String, required: false },
     picture: { type: String, required: false },
+    phone: { type: String, required: false },
     cartData: { type: Object, default: {} },
     wishlist: { type: Array, default: [] },
+    address: {
+        street: { type: String, required: false },
+        city: { type: String, required: false },
+        state: { type: String, required: false },
+        zipcode: { type: String, required: false },
+        country: { type: String, required: false },
+        phone: { type: String, required: false },
+        updatedAt: { type: Date, required: false }
+    },
     bodyMeasurements: {
         height: { type: Number, required: false },
         weight: { type: Number, required: false },

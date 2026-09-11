@@ -178,16 +178,114 @@ const getProfile = async (req, res) => {
             return res.json({ success: false, message: "User not found" });
         }
         
-        res.json({ 
-            success: true, 
+        res.json({
+            success: true,
             user: {
                 name: user.name,
                 email: user.email,
+                phone: user.phone || '',
                 picture: user.picture || null,
                 googleId: user.googleId ? true : false
             }
         });
-        
+
+    } catch (error) {
+        console.log(error);
+        res.json({ success: false, message: error.message });
+    }
+}
+
+// Route to update user personal details (name + phone)
+const updatePersonalDetails = async (req, res) => {
+    try {
+        const { userId, name, phone } = req.body;
+
+        if (!name || !name.trim()) {
+            return res.json({ success: false, message: "Name is required" });
+        }
+
+        const user = await userModel.findByIdAndUpdate(
+            userId,
+            { name: name.trim(), phone: phone ? phone.trim() : '' },
+            { new: true }
+        ).select('name phone');
+
+        if (!user) {
+            return res.json({ success: false, message: "User not found" });
+        }
+
+        res.json({
+            success: true,
+            message: "Personal details updated successfully",
+            user: { name: user.name, phone: user.phone || '' }
+        });
+
+    } catch (error) {
+        console.log(error);
+        res.json({ success: false, message: error.message });
+    }
+}
+
+// Route to get user's saved address
+const getAddress = async (req, res) => {
+    try {
+        const { userId } = req.body;
+
+        const user = await userModel.findById(userId).select('address');
+
+        if (!user) {
+            return res.json({ success: false, message: "User not found" });
+        }
+
+        res.json({
+            success: true,
+            address: user.address || null
+        });
+
+    } catch (error) {
+        console.log(error);
+        res.json({ success: false, message: error.message });
+    }
+}
+
+// Route to update user's saved address
+const updateAddress = async (req, res) => {
+    try {
+        const { userId, address } = req.body;
+
+        const requiredFields = ['street', 'city', 'zipcode', 'country'];
+        for (const field of requiredFields) {
+            if (!address || !address[field] || !String(address[field]).trim()) {
+                return res.json({ success: false, message: `${field} is required` });
+            }
+        }
+
+        const addressData = {
+            street: address.street.trim(),
+            city: address.city.trim(),
+            state: address.state ? address.state.trim() : '',
+            zipcode: address.zipcode.trim(),
+            country: address.country.trim(),
+            phone: address.phone ? address.phone.trim() : '',
+            updatedAt: new Date()
+        };
+
+        const user = await userModel.findByIdAndUpdate(
+            userId,
+            { address: addressData },
+            { new: true }
+        ).select('address');
+
+        if (!user) {
+            return res.json({ success: false, message: "User not found" });
+        }
+
+        res.json({
+            success: true,
+            message: "Address updated successfully",
+            address: user.address
+        });
+
     } catch (error) {
         console.log(error);
         res.json({ success: false, message: error.message });
@@ -260,4 +358,4 @@ const updateMeasurements = async (req, res) => {
     }
 }
 
-export { loginUser, registerUser, adminLogin, googleLogin, getProfile, getMeasurements, updateMeasurements }
+export { loginUser, registerUser, adminLogin, googleLogin, getProfile, updatePersonalDetails, getAddress, updateAddress, getMeasurements, updateMeasurements }
