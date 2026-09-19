@@ -10,7 +10,8 @@ const productSchema = new mongoose.Schema({
     sizes: { type: Array, required: true },
     bestseller: { type: Boolean },
     date: { type: Number, required: true },
-    sizeChart: { type: Object, required: false }
+    sizeChart: { type: Object, required: false },
+    seasons: { type: [String], default: [] }
 })
 
 const productModel  = mongoose.models.product || mongoose.model("product",productSchema);

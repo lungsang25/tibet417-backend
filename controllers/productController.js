@@ -1,11 +1,21 @@
 import { v2 as cloudinary } from "cloudinary"
 import productModel from "../models/productModel.js"
+import { SEASONS } from "../constants/seasonConstants.js"
+
+// Accepts a JSON string (multipart form) or an array (JSON body); anything
+// that is not a known season is dropped.
+const parseSeasons = (value) => {
+    if (!value) return []
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value
+    if (!Array.isArray(parsed)) return []
+    return SEASONS.filter((season) => parsed.includes(season))
+}
 
 // function for add product
 const addProduct = async (req, res) => {
     try {
 
-        const { name, description, price, category, subCategory, sizes, bestseller } = req.body
+        const { name, description, price, category, subCategory, sizes, bestseller, seasons } = req.body
 
         const image1 = req.files.image1 && req.files.image1[0]
         const image2 = req.files.image2 && req.files.image2[0]
@@ -35,6 +45,7 @@ const addProduct = async (req, res) => {
             bestseller: bestseller === "true" ? true : false,
             sizes: JSON.parse(sizes),
             image: imagesUrl,
+            seasons: parseSeasons(seasons),
             date: Date.now()
         }
 
@@ -77,6 +88,24 @@ const removeProduct = async (req, res) => {
     }
 }
 
+// function for tagging an existing product with seasons
+const updateProductSeasons = async (req, res) => {
+    try {
+
+        const { id, seasons } = req.body
+        const product = await productModel.findByIdAndUpdate(id, { seasons: parseSeasons(seasons) }, { new: true })
+        if (!product) {
+            return res.json({ success: false, message: "Product not found" })
+        }
+
+        res.json({ success: true, message: "Seasons Updated", seasons: product.seasons })
+
+    } catch (error) {
+        console.log(error)
+        res.json({ success: false, message: error.message })
+    }
+}
+
 // function for single product info
 const singleProduct = async (req, res) => {
     try {
@@ -91,4 +120,4 @@ const singleProduct = async (req, res) => {
     }
 }
 
-export { listProducts, addProduct, removeProduct, singleProduct }
+export { listProducts, addProduct, removeProduct, singleProduct, updateProductSeasons }
