@@ -11,6 +11,7 @@ import analyticsRouter from './routes/analyticsRoute.js'
 import wishlistRouter from './routes/wishlistRoute.js'
 import bonusRouter from './routes/bonusRoute.js'
 import lookRouter from './routes/lookRoute.js'
+import saleRouter from './routes/saleRoute.js'
 
 // App Config
 const app = express()
@@ -31,6 +32,7 @@ app.use('/api/analytics',analyticsRouter)
 app.use('/api/wishlist',wishlistRouter)
 app.use('/api/bonus',bonusRouter)
 app.use('/api/look',lookRouter)
+app.use('/api/sale',saleRouter)
 
 app.get('/',(req,res)=>{
     res.send("API Working")

@@ -1,9 +1,12 @@
 import mongoose from "mongoose";
 import orderModel from "../models/orderModel.js";
 import userModel from "../models/userModel.js";
+import productModel from "../models/productModel.js";
 import Stripe from 'stripe'
 import PayrexxAPI from "../utils/payrexx.js"
 import * as bonusService from "../services/bonusService.js"
+import * as saleService from "../services/saleService.js"
+import { priceOrder } from "../utils/orderPricing.js"
 import {
     ORDER_STATUSES,
     CARRIERS,
@@ -48,16 +51,28 @@ const payrexx = new PayrexxAPI(
  * what prevents a double-spend (see computeRedemption) and guarantees a bonus
  * row can never exist for an order that failed to save, or vice versa.
  *
- * `amount` in, `finalAmount` (net of any redemption discount) out — callers
- * must use the RETURNED order's `amount`/`redemption`, not the raw request
- * body, for anything downstream (Stripe line items, Payrexx gateway amount,
- * the JSON response).
+ * The request only says WHICH products, sizes and quantities are wanted.
+ * Every price and the order total are recomputed here from the database (and
+ * the sale in force right now — see utils/orderPricing.js), so a price or
+ * `amount` sent by the browser is never used. Callers must use the RETURNED
+ * order's `items`/`amount`/`redemption` — `amount` being net of any redemption
+ * discount — for anything downstream (Stripe line items, Payrexx gateway
+ * amount, the JSON response), not the raw request body.
  */
-const buildAndSaveOrder = async ({ userId, items, address, amount, paymentMethod, locale, redeemPoints }) => {
+const buildAndSaveOrder = async ({ userId, items: requestedItems, address, paymentMethod, locale, redeemPoints }) => {
     const settings = await bonusService.getSettings()
-    // One timestamp for both `date` and the seeded history entry, so the
-    // order list and the timeline can never disagree by a millisecond.
+    // One timestamp for `date`, the seeded history entry AND the sale stage the
+    // order is priced at, so they can never disagree by a millisecond.
     const now = Date.now()
+
+    const productIds = Array.isArray(requestedItems)
+        ? [...new Set(requestedItems.map((item) => String(item?._id)).filter((id) => mongoose.isValidObjectId(id)))]
+        : []
+    const [products, sale] = await Promise.all([
+        productModel.find({ _id: { $in: productIds } }).lean(),
+        saleService.getCurrentSale(now),
+    ])
+    const { items, amount } = priceOrder({ items: requestedItems, products, sale, deliveryFee: deliveryCharge })
 
     const mongoSession = await mongoose.startSession()
     try {
@@ -113,10 +128,10 @@ const placeOrder = async (req,res) => {
 
     try {
 
-        const { userId, items, amount, address, locale, redeemPoints } = req.body;
+        const { userId, items, address, locale, redeemPoints } = req.body;
 
         const { order } = await buildAndSaveOrder({
-            userId, items, address, amount, paymentMethod: 'COD', locale, redeemPoints,
+            userId, items, address, paymentMethod: 'COD', locale, redeemPoints,
         })
 
         await userModel.findByIdAndUpdate(userId,{cartData:{}})
@@ -142,21 +157,24 @@ const placeOrder = async (req,res) => {
 const placeOrderStripe = async (req,res) => {
     try {
 
-        const { userId, items, amount, address, locale, redeemPoints } = req.body
+        const { userId, items, address, locale, redeemPoints } = req.body
         const { origin } = req.headers;
 
         const { order, discountAmount } = await buildAndSaveOrder({
-            userId, items, address, amount, paymentMethod: 'Stripe', locale, redeemPoints,
+            userId, items, address, paymentMethod: 'Stripe', locale, redeemPoints,
         })
 
         try {
-            const line_items = items.map((item) => ({
+            // From the saved order, not the request: those are the prices the
+            // server worked out (sale included). Stripe needs whole cents,
+            // and a sale price can have fractional ones.
+            const line_items = order.items.map((item) => ({
                 price_data: {
                     currency:currency,
                     product_data: {
                         name:item.name
                     },
-                    unit_amount: item.price * 100
+                    unit_amount: Math.round(item.price * 100)
                 },
                 quantity: item.quantity
             }))
@@ -240,10 +258,10 @@ const verifyStripe = async (req,res) => {
 // Placing orders using Twint via Payrexx
 const placeOrderTwint = async (req, res) => {
     try {
-        const { userId, items, amount, address, locale, redeemPoints } = req.body
+        const { userId, items, address, locale, redeemPoints } = req.body
 
         const { order: newOrder } = await buildAndSaveOrder({
-            userId, items, address, amount, paymentMethod: 'Twint', locale, redeemPoints,
+            userId, items, address, paymentMethod: 'Twint', locale, redeemPoints,
         })
 
         // Create Payrexx Gateway for Twint payment with minimal required fields
