@@ -38,7 +38,9 @@ const userSchema = new mongoose.Schema({
     // This user's own referral code, generated lazily on first use (either at
     // registration or on first visit to the rewards page) rather than
     // backfilled for every existing account up front.
-    referralCode: { type: String, default: null, index: true, sparse: true, unique: true },
+    // No `default: null` — a sparse unique index still indexes explicit nulls,
+    // so a second user with referralCode: null hits E11000. Leave it unset.
+    referralCode: { type: String, index: true, sparse: true, unique: true },
 
     // The referrer's userId, captured once at registration and never mutated
     // afterward — there is no endpoint that changes it, so a referral cannot
