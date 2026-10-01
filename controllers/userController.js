@@ -4,6 +4,8 @@ import jwt from 'jsonwebtoken'
 import { OAuth2Client } from 'google-auth-library'
 import userModel from "../models/userModel.js";
 import * as bonusService from "../services/bonusService.js"
+import { sendWelcomeEmail } from "../utils/mailer.js"
+import { normalizeLocale } from "../constants/orderConstants.js"
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -46,7 +48,7 @@ const loginUser = async (req, res) => {
 const registerUser = async (req, res) => {
     try {
 
-        const { name, email, password, referralCode } = req.body;
+        const { name, email, password, referralCode, locale } = req.body;
 
         // checking user already exists or not
         const exists = await userModel.findOne({ email });
@@ -83,7 +85,10 @@ const registerUser = async (req, res) => {
         // Fire-and-forget from the response's point of view, but awaited: on
         // Vercel the instance can freeze the moment the response flushes.
         // Never throws, so a bonus-ledger issue cannot fail registration.
-        await bonusService.grantWelcomeBonus(user._id)
+        const welcome = await bonusService.grantWelcomeBonus(user._id)
+        if (welcome.granted) {
+            await sendWelcomeEmail({ user, points: welcome.points, locale: normalizeLocale(locale) })
+        }
 
         const token = createToken(user._id)
 
@@ -118,7 +123,7 @@ const adminLogin = async (req, res) => {
 // Route for Google login
 const googleLogin = async (req, res) => {
     try {
-        const { credential, referralCode } = req.body;
+        const { credential, referralCode, locale } = req.body;
 
         // Verify the Google token
         const ticket = await googleClient.verifyIdToken({
@@ -155,7 +160,10 @@ const googleLogin = async (req, res) => {
             });
             await user.save();
 
-            await bonusService.grantWelcomeBonus(user._id)
+            const welcome = await bonusService.grantWelcomeBonus(user._id)
+            if (welcome.granted) {
+                await sendWelcomeEmail({ user, points: welcome.points, locale: normalizeLocale(locale) })
+            }
         }
 
         const token = createToken(user._id);

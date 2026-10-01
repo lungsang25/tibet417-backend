@@ -11,7 +11,7 @@ const bonusMeta = async (req, res) => {
         res.set('Cache-Control', 'public, max-age=60')
         res.json({
             success: true,
-            welcome: { active: settings.welcome.active },
+            welcome: { active: settings.welcome.active, points: settings.welcome.points },
             referral: {
                 active: settings.referral.active,
                 minQualifyingOrderAmount: settings.referral.minQualifyingOrderAmount,

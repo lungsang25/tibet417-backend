@@ -30,6 +30,13 @@ const COPY = {
             heading: 'Your order has arrived',
             intro: 'Hello {{firstName}}, your order {{orderNumber}} was delivered on {{deliveredOn}}.',
         },
+        welcome: {
+            subject: 'Welcome to Tibet417, {{firstName}} – {{points}} bonus points are waiting',
+            preheader: 'Your welcome gift is already in your account.',
+            heading: 'Welcome to the Tibet417 family',
+            intro: 'Hello {{firstName}}, we are delighted to have you with us. As a warm thank-you for joining, we have added {{points}} bonus points to your account – they are yours to redeem on your next order.',
+            cta: 'View my rewards',
+        },
         carrierLabel: 'Carrier',
         trackingLabel: 'Tracking number',
         etaLabel: 'Estimated delivery',
@@ -49,6 +56,13 @@ const COPY = {
             preheader: 'Ihr Paket ist angekommen.',
             heading: 'Ihre Bestellung ist angekommen',
             intro: 'Guten Tag {{firstName}}, Ihre Bestellung {{orderNumber}} wurde am {{deliveredOn}} zugestellt.',
+        },
+        welcome: {
+            subject: 'Willkommen bei Tibet417, {{firstName}} – {{points}} Bonuspunkte warten auf Sie',
+            preheader: 'Ihr Willkommensgeschenk ist bereits in Ihrem Konto.',
+            heading: 'Willkommen in der Tibet417-Familie',
+            intro: 'Guten Tag {{firstName}}, wir freuen uns sehr, Sie bei uns zu begrüssen. Als herzliches Dankeschön für Ihre Anmeldung haben wir Ihrem Konto {{points}} Bonuspunkte gutgeschrieben – Sie können sie bei Ihrer nächsten Bestellung einlösen.',
+            cta: 'Meine Punkte ansehen',
         },
         carrierLabel: 'Versanddienst',
         trackingLabel: 'Sendungsnummer',
@@ -70,6 +84,13 @@ const COPY = {
             heading: 'Votre commande est arrivée',
             intro: 'Bonjour {{firstName}}, votre commande {{orderNumber}} a été livrée le {{deliveredOn}}.',
         },
+        welcome: {
+            subject: 'Bienvenue chez Tibet417, {{firstName}} – {{points}} points bonus vous attendent',
+            preheader: 'Votre cadeau de bienvenue est déjà dans votre compte.',
+            heading: 'Bienvenue dans la famille Tibet417',
+            intro: 'Bonjour {{firstName}}, nous sommes ravis de vous accueillir. En guise de chaleureux remerciement, nous avons ajouté {{points}} points bonus à votre compte – vous pourrez les utiliser lors de votre prochaine commande.',
+            cta: 'Voir mes points',
+        },
         carrierLabel: 'Transporteur',
         trackingLabel: 'Numéro de suivi',
         etaLabel: 'Livraison estimée',
@@ -89,6 +110,13 @@ const COPY = {
             preheader: 'Il suo pacco è arrivato.',
             heading: 'Il suo ordine è arrivato',
             intro: 'Buongiorno {{firstName}}, il suo ordine {{orderNumber}} è stato consegnato il {{deliveredOn}}.',
+        },
+        welcome: {
+            subject: 'Benvenuto in Tibet417, {{firstName}} – {{points}} punti bonus ti aspettano',
+            preheader: 'Il suo regalo di benvenuto è già nel suo account.',
+            heading: 'Benvenuto nella famiglia Tibet417',
+            intro: 'Buongiorno {{firstName}}, siamo felici di averla con noi. Come caloroso ringraziamento abbiamo aggiunto {{points}} punti bonus al suo account – potrà utilizzarli con il suo prossimo ordine.',
+            cta: 'Vedi i miei punti',
         },
         carrierLabel: 'Corriere',
         trackingLabel: 'Numero di tracciamento',
@@ -203,6 +231,38 @@ ${rows}
     return {
         subject: fill(eventCopy.subject, vars),
         html: layout({ preheader: eventCopy.preheader, heading: eventCopy.heading, bodyHtml }),
+        text,
+    }
+}
+
+/**
+ * Builds { subject, html, text } for the welcome-bonus email sent to a new
+ * account. `user` needs only `name`.
+ */
+export const buildWelcomeEmail = ({ user, points, locale: rawLocale, storefrontUrl }) => {
+    const locale = normalizeLocale(rawLocale)
+    const copy = COPY[locale] || COPY[DEFAULT_LOCALE]
+    const w = copy.welcome
+
+    const vars = {
+        firstName: String(user?.name || '').trim().split(/\s+/)[0],
+        points: new Intl.NumberFormat(LOCALE_TAG[locale]).format(points),
+    }
+    const rewardsUrl = `${storefrontUrl}/${locale}/rewards`
+
+    const bodyHtml = `
+<p style="margin:0 0 20px;font-size:15px;line-height:1.6;">${esc(fill(w.intro, vars))}</p>
+<p style="margin:28px 0 0;">
+  <a href="${rewardsUrl}" style="display:inline-block;background:#1A1A1A;color:#FAF9F7;text-decoration:none;padding:12px 28px;font-size:14px;">${esc(w.cta)}</a>
+</p>
+<hr style="border:0;border-top:1px solid #E5E2DD;margin:32px 0 16px;" />
+<p style="margin:0;font-size:12px;color:#8A8580;">${esc(copy.footer)}</p>`
+
+    const text = [fill(w.intro, vars), '', `${w.cta}: ${rewardsUrl}`, '', copy.footer].join('\n')
+
+    return {
+        subject: fill(w.subject, vars),
+        html: layout({ preheader: w.preheader, heading: w.heading, bodyHtml }),
         text,
     }
 }

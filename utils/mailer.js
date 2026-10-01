@@ -14,7 +14,7 @@
  * NOTHING here ever throws. A mail outage must not fail an admin's Save, and
  * the database write it follows is already committed.
  */
-import { buildOrderEmail } from './emailTemplates.js'
+import { buildOrderEmail, buildWelcomeEmail } from './emailTemplates.js'
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails'
 const TIMEOUT_MS = 8000
@@ -85,6 +85,55 @@ export const sendOrderStatusEmail = async ({ order, event }) => {
         return { sent: true }
     } catch (error) {
         console.log(`[mailer] failed ${event} for order ${order._id}: ${error.message}`)
+        return { sent: false, reason: 'exception' }
+    } finally {
+        clearTimeout(timer)
+    }
+}
+
+export const sendWelcomeEmail = async ({ user, points, locale }) => {
+    if (!isMailConfigured()) {
+        console.log(`[mailer] skipped welcome for user ${user?._id} — mail disabled or RESEND_API_KEY unset`)
+        return { sent: false, reason: 'disabled' }
+    }
+
+    const to = resolveRecipient(user?.email)
+    if (!to) return { sent: false, reason: 'no-recipient' }
+
+    const storefrontUrl = (process.env.FRONTEND_URL || 'https://www.tibet417.com').replace(/\/+$/, '')
+    const { subject, html, text } = buildWelcomeEmail({ user, points, locale, storefrontUrl })
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+
+    try {
+        const response = await fetch(RESEND_ENDPOINT, {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+                Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                from: process.env.MAIL_FROM,
+                to: [to],
+                reply_to: process.env.MAIL_REPLY_TO || undefined,
+                subject,
+                html,
+                text,
+            }),
+        })
+
+        if (!response.ok) {
+            const body = await response.text().catch(() => '')
+            console.log(`[mailer] resend ${response.status} for welcome ${user._id}: ${body}`)
+            return { sent: false, reason: `http-${response.status}` }
+        }
+
+        console.log(`[mailer] sent welcome for user ${user._id} to ${to}`)
+        return { sent: true }
+    } catch (error) {
+        console.log(`[mailer] failed welcome for user ${user._id}: ${error.message}`)
         return { sent: false, reason: 'exception' }
     } finally {
         clearTimeout(timer)
