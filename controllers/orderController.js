@@ -513,6 +513,16 @@ const allOrders = async (req, res) => {
         const page = Math.max(Number(req.body.page) || 1, 1)
         const filter = isValidStatus(req.body.status) ? { status: req.body.status } : {}
 
+        // Optional date range (epoch ms, [from, to)). The admin computes it in
+        // its own local time so "today" means the admin's today, not the server's.
+        const from = req.body.from == null ? NaN : Number(req.body.from)
+        const to = req.body.to == null ? NaN : Number(req.body.to)
+        if (Number.isFinite(from) || Number.isFinite(to)) {
+            filter.date = {}
+            if (Number.isFinite(from)) filter.date.$gte = from
+            if (Number.isFinite(to)) filter.date.$lt = to
+        }
+
         // Sorted server-side, newest first. The admin's client-side .reverse()
         // only ever approximated this — it reversed insertion order, not date —
         // and becomes outright wrong the moment there is more than one page.
@@ -540,6 +550,36 @@ const userOrders = async (req,res) => {
     } catch (error) {
         console.log(error)
         res.json({success:false,message:error.message})
+    }
+}
+
+/**
+ * Billed orders for the Profile "purchases & receipts" card.
+ *
+ * Billable = paid online, or cash-on-delivery (billed at placement), and not
+ * cancelled/refunded. An unpaid Stripe/Twint order is only an abandoned
+ * checkout, so it must never show up as a purchase the customer "made".
+ * Slim projection: the profile only needs the list, the receipt page loads the
+ * full order through singleOrder.
+ */
+const userReceipts = async (req, res) => {
+    try {
+        const { userId } = req.body
+
+        const orders = await orderModel.find(
+            {
+                userId,
+                $or: [{ payment: true }, { paymentMethod: 'COD' }],
+                'cancellation.status': { $nin: ['cancelled', 'refunded'] },
+            },
+            { date: 1, amount: 1, paymentMethod: 1, status: 1 },
+        ).sort({ date: -1 })
+
+        const totalSpent = orders.reduce((sum, order) => sum + order.amount, 0)
+        res.json({ success: true, orders, count: orders.length, totalSpent })
+    } catch (error) {
+        console.log(error)
+        res.json({ success: false, message: error.message })
     }
 }
 
@@ -826,6 +866,7 @@ export {
     orderMeta,
     allOrders,
     userOrders,
+    userReceipts,
     singleOrder,
     updateStatus,
     updateTracking,

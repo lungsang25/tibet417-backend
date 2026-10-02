@@ -6,6 +6,7 @@ import {
     orderMeta,
     allOrders,
     userOrders,
+    userReceipts,
     singleOrder,
     updateStatus,
     updateTracking,
@@ -46,6 +47,7 @@ orderRouter.post('/twint',authUser,placeOrderTwint)
 // User Feature 
 orderRouter.post('/userorders',authUser,userOrders)
 orderRouter.post('/single',authUser,singleOrder)
+orderRouter.post('/receipts',authUser,userReceipts)
 
 // verify payment
 orderRouter.post('/verifyStripe',authUser, verifyStripe)
