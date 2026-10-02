@@ -60,3 +60,15 @@ test('describeSale exposes the current stage, its products and the server clock'
     assert.deepEqual(sale.productIds, ['a', 'b'])
     assert.equal(sale.serverNow, START + 30 * HOUR)
 })
+
+test('step length is configurable per sale', () => {
+    const THREE_DAYS = 72 * HOUR
+    assert.deepEqual(getSaleStage(START, START + 72 * HOUR - 1, THREE_DAYS), { stageIndex: 0, percentOff: 25, nextChangeAt: START + 72 * HOUR })
+    assert.equal(getSaleStage(START, START + 72 * HOUR, THREE_DAYS).percentOff, 50)
+    assert.equal(getSaleStage(START, START + 144 * HOUR, THREE_DAYS).nextChangeAt, null)
+    assert.equal(describeSale({ active: true, startAt: START, stageMs: THREE_DAYS, productIds: [] }, START + 80 * HOUR).percentOff, 50)
+})
+
+test('a sale saved before stageMs existed keeps the 24h steps', () => {
+    assert.equal(describeSale({ active: true, startAt: START, productIds: [] }, START + 25 * HOUR).percentOff, 50)
+})

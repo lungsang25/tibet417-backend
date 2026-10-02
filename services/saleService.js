@@ -1,7 +1,7 @@
 import mongoose from 'mongoose'
 import saleModel from '../models/saleModel.js'
 import productModel from '../models/productModel.js'
-import { SALE_SINGLETON_KEY } from '../constants/saleConstants.js'
+import { SALE_SINGLETON_KEY, SALE_STAGE_MS, SALE_STAGE_MIN_MS, SALE_STAGE_MAX_MS } from '../constants/saleConstants.js'
 import { describeSale } from '../utils/salePricing.js'
 
 /** Lazy-create the singleton on first read — no seed script needed. */
@@ -19,8 +19,11 @@ export const getCurrentSale = async (now = Date.now()) => describeSale(await get
  * Start or reschedule the sale. Saving always switches it on — "end sale" is
  * the only way to switch it off — and restarts the timetable from `startAt`.
  */
-export const saveSale = async ({ startAt, productIds }) => {
+export const saveSale = async ({ startAt, productIds, stageMs = SALE_STAGE_MS }) => {
     if (!Number.isFinite(startAt)) throw new Error('A valid start time is required')
+    if (!Number.isFinite(stageMs) || stageMs < SALE_STAGE_MIN_MS || stageMs > SALE_STAGE_MAX_MS) {
+        throw new Error('Step length must be between 24 hours and 7 days')
+    }
 
     const ids = [...new Set((Array.isArray(productIds) ? productIds : []).map(String))]
     if (ids.length === 0) throw new Error('Select at least one product for the sale')
@@ -32,7 +35,7 @@ export const saveSale = async ({ startAt, productIds }) => {
     await getSale()
     return saleModel.findOneAndUpdate(
         { singletonKey: SALE_SINGLETON_KEY },
-        { $set: { active: true, startAt, productIds: ids, updatedAt: Date.now() } },
+        { $set: { active: true, startAt, stageMs, productIds: ids, updatedAt: Date.now() } },
         { new: true },
     )
 }

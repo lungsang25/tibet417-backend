@@ -1,6 +1,6 @@
 import * as saleService from '../services/saleService.js'
 import { describeSale } from '../utils/salePricing.js'
-import { SALE_STAGES, SALE_STAGE_MS } from '../constants/saleConstants.js'
+import { SALE_STAGES, SALE_STAGE_MS, SALE_STAGE_MIN_MS, SALE_STAGE_MAX_MS } from '../constants/saleConstants.js'
 
 // Public. The cache is kept to a few seconds so a stage change (or an admin
 // ending the sale) reaches shoppers almost immediately.
@@ -20,12 +20,14 @@ const adminPayload = (saleDoc) => ({
     config: {
         active: saleDoc.active,
         startAt: saleDoc.startAt,
+        stageMs: saleDoc.stageMs ?? SALE_STAGE_MS,
         productIds: saleDoc.productIds,
     },
     // ...and where the timetable is right now.
     status: describeSale(saleDoc),
     stages: SALE_STAGES,
-    stageMs: SALE_STAGE_MS,
+    minStageMs: SALE_STAGE_MIN_MS,
+    maxStageMs: SALE_STAGE_MAX_MS,
 })
 
 const getAdminSale = async (req, res) => {
@@ -40,11 +42,11 @@ const getAdminSale = async (req, res) => {
 
 const saveAdminSale = async (req, res) => {
     try {
-        const { startAt, startNow, productIds } = req.body
+        const { startAt, startNow, productIds, stageMs } = req.body
         // "Start now" is stamped here rather than sent by the browser, so the
         // timetable never depends on the admin's own clock being right.
         const start = startNow ? Date.now() : Number(startAt)
-        const saleDoc = await saleService.saveSale({ startAt: start, productIds })
+        const saleDoc = await saleService.saveSale({ startAt: start, productIds, stageMs: stageMs === undefined ? undefined : Number(stageMs) })
         res.json({ success: true, message: 'Sale saved', ...adminPayload(saleDoc) })
     } catch (error) {
         console.log(error)

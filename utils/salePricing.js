@@ -13,14 +13,15 @@ import { SALE_STAGES, SALE_STAGE_MS } from '../constants/saleConstants.js'
  * Returns null before the start. `nextChangeAt` is null in the last stage,
  * which has no end of its own.
  */
-export const getSaleStage = (startAt, now = Date.now()) => {
+export const getSaleStage = (startAt, now = Date.now(), stageMs = SALE_STAGE_MS) => {
     if (!Number.isFinite(startAt) || now < startAt) return null
+    const step = Number.isFinite(stageMs) && stageMs > 0 ? stageMs : SALE_STAGE_MS
     const lastIndex = SALE_STAGES.length - 1
-    const stageIndex = Math.min(Math.floor((now - startAt) / SALE_STAGE_MS), lastIndex)
+    const stageIndex = Math.min(Math.floor((now - startAt) / step), lastIndex)
     return {
         stageIndex,
         percentOff: SALE_STAGES[stageIndex],
-        nextChangeAt: stageIndex < lastIndex ? startAt + (stageIndex + 1) * SALE_STAGE_MS : null,
+        nextChangeAt: stageIndex < lastIndex ? startAt + (stageIndex + 1) * step : null,
     }
 }
 
@@ -40,7 +41,7 @@ export const applySalePercent = (price, percentOff) => {
  * treats it as no sale.
  */
 export const describeSale = (sale, now = Date.now()) => {
-    const stage = sale?.active ? getSaleStage(sale.startAt, now) : null
+    const stage = sale?.active ? getSaleStage(sale.startAt, now, sale.stageMs) : null
     return {
         active: stage !== null,
         percentOff: stage ? stage.percentOff : 0,
