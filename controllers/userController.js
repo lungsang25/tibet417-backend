@@ -1,4 +1,5 @@
 import validator from "validator";
+import mongoose from "mongoose";
 import bcrypt from "bcrypt"
 import jwt from 'jsonwebtoken'
 import { OAuth2Client } from 'google-auth-library'
@@ -366,4 +367,41 @@ const updateMeasurements = async (req, res) => {
     }
 }
 
-export { loginUser, registerUser, adminLogin, googleLogin, getProfile, updatePersonalDetails, getAddress, updateAddress, getMeasurements, updateMeasurements }
+// Admin: newest-first user list. There is no createdAt on the schema, so the
+// join date is the ObjectId timestamp, which also covers pre-existing users.
+const listUsers = async (req, res) => {
+    try {
+        const limit = Math.min(Math.max(Number(req.body.limit) || 50, 1), 200)
+        const page = Math.max(Number(req.body.page) || 1, 1)
+        const search = String(req.body.search || '').trim()
+        const filter = {}
+
+        if (search) {
+            filter.name = { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' }
+        }
+
+        const dayStart = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '') ? new Date(s + 'T00:00:00.000Z') : null
+        const from = dayStart(req.body.from)
+        const to = dayStart(req.body.to)
+        const idRange = {}
+        if (from && !isNaN(from)) idRange.$gte = mongoose.Types.ObjectId.createFromTime(Math.floor(from.getTime() / 1000))
+        if (to && !isNaN(to)) idRange.$lt = mongoose.Types.ObjectId.createFromTime(Math.floor(to.getTime() / 1000) + 86400)
+        if (Object.keys(idRange).length) filter._id = idRange
+
+        const [users, total] = await Promise.all([
+            userModel.find(filter).select('name email').sort({ _id: -1 }).skip((page - 1) * limit).limit(limit),
+            userModel.countDocuments(filter),
+        ])
+
+        res.json({
+            success: true,
+            users: users.map((u) => ({ _id: u._id, name: u.name, email: u.email, joinedAt: u._id.getTimestamp() })),
+            total, page, limit,
+        })
+    } catch (error) {
+        console.log(error)
+        res.json({ success: false, message: error.message })
+    }
+}
+
+export { loginUser, registerUser, adminLogin, googleLogin, getProfile, updatePersonalDetails, getAddress, updateAddress, getMeasurements, updateMeasurements, listUsers }
